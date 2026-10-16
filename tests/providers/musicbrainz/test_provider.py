@@ -1508,10 +1508,98 @@ async def test_resolve_release_tries_the_release_group_after_an_unknown_barcode(
 
 
 async def test_resolve_release_is_none_without_any_evidence() -> None:
-    """An album without ids, barcodes or streaming links is never searched by name."""
+    """An album without ids, barcodes, streaming links or a track count is never searched."""
     provider, get_data = _routed_provider({})
 
     assert await provider.resolve_release(_album_item()) is None
+    get_data.assert_not_awaited()
+
+
+async def test_resolve_release_by_name_as_the_last_resort() -> None:
+    """An album nothing else identifies is found by title, primary artist and track count."""
+    candidates = {
+        "count": 3,
+        "releases": [
+            _edition("rel-cd", media_format="CD", country="GB"),
+            _edition("rel-18", track_counts=(10, 8)),
+            _edition("rel-xw"),
+        ],
+    }
+    provider, get_data = _routed_provider(
+        {"release?query": candidates, "release/rel-xw": _release_lookup("rel-xw")}
+    )
+
+    release = await provider.resolve_release(_album_item(), library_track_count=10)
+
+    assert release is not None
+    assert release.id == "rel-xw"
+    assert _requested(get_data) == ["release?query", "release/rel-xw"]
+
+
+async def test_resolve_release_by_name_needs_title_artist_and_track_count() -> None:
+    """A hit with another title, primary artist or track count is not looked up."""
+    candidates = {
+        "count": 3,
+        "releases": [
+            _edition("rel-1", title="OK Computer"),
+            _edition("rel-2", credit=_credit("Muse", "artist-muse")),
+            _edition("rel-3", track_counts=(12,)),
+        ],
+    }
+    provider, get_data = _routed_provider({"release?query": candidates})
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_abstains_on_several_release_groups() -> None:
+    """Two albums of the same name by the same artist cannot be told apart by name."""
+    other_album = _edition("rel-2")
+    other_album["release-group"] = {"id": "rg-other", "title": "In Rainbows"}
+    provider, get_data = _routed_provider(
+        {"release?query": {"count": 2, "releases": [_edition("rel-1"), other_album]}}
+    )
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_abstains_on_an_incomplete_search() -> None:
+    """A truncated search or one with an unparsable hit may hide another album."""
+    for result in (
+        {"count": 101, "releases": [_edition("rel-1")]},
+        {"count": 2, "releases": [_edition("rel-1"), {"title": "In Rainbows"}]},
+    ):
+        provider, get_data = _routed_provider(
+            {"release?query": result, "release/rel-1": _release_lookup("rel-1")}
+        )
+
+        assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+        assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_looks_up_two_editions_at_most() -> None:
+    """A name search spends one search and at most two release lookups."""
+    candidates = {"count": 3, "releases": [_edition(f"rel-{index}") for index in range(3)]}
+    provider, get_data = _routed_provider(
+        {
+            "release?query": candidates,
+            **{
+                f"release/rel-{index}": _release_lookup(f"rel-{index}", title="OK Computer")
+                for index in range(3)
+            },
+        }
+    )
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query", "release/rel-0", "release/rel-1"]
+
+
+async def test_resolve_release_by_name_needs_an_artist() -> None:
+    """An album without artists is never searched by name."""
+    provider, get_data = _routed_provider({})
+
+    assert await provider.resolve_release(_album_item(artist=None), library_track_count=10) is None
     get_data.assert_not_awaited()
 
 
@@ -1817,8 +1905,7 @@ def test_reverse_lookup_urls_include_the_mappings_own_public_links() -> None:
             _mapping("apple_music", "657515", "https://music.apple.com/gb/artist/radiohead/657515"),
             _mapping("soundcloud", "radiohead", "https://soundcloud.com/radiohead"),
             _mapping("bandcamp", "radiohead", "https://radiohead.bandcamp.com/"),
-            # a local server's URL, or one MusicBrainz stores differently, never goes out
-            _mapping("qobuz", "43840", "https://open.qobuz.com/artist/43840"),
+            # a local server's URL never goes out
             _mapping(
                 "plex", "1", "http://192.168.1.5:32400/library/metadata/1?X-Plex-Token=s3cret"
             ),
@@ -1831,6 +1918,49 @@ def test_reverse_lookup_urls_include_the_mappings_own_public_links() -> None:
         "https://radiohead.bandcamp.com/",
         "https://soundcloud.com/radiohead",
     ]
+
+
+def test_reverse_lookup_urls_include_qobuz_artists_only() -> None:
+    """Qobuz artists are looked up by their Qobuz page, albums and name-only performers never."""
+    artist = _artist_item(
+        mappings={_mapping("qobuz", "43840", "https://open.qobuz.com/artist/43840")}
+    )
+    album = _album_item(
+        mappings={_mapping("qobuz", "ftrty0qq43i3b", "https://open.qobuz.com/album/ftrty0qq43i3b")}
+    )
+
+    assert MusicbrainzProvider._reverse_lookup_urls(artist) == [
+        "https://open.qobuz.com/artist/43840"
+    ]
+    assert MusicbrainzProvider._reverse_lookup_urls(album) == []
+    assert (
+        MusicbrainzProvider._reverse_lookup_urls(
+            _artist_item(mappings={_mapping("qobuz", "Herbert von Karajan")})
+        )
+        == []
+    )
+    assert (
+        MusicbrainzProvider._reverse_lookup_urls(_artist_item(mappings={_mapping("qobuz", "311")}))
+        == []
+    )
+
+
+async def test_resolve_artist_by_qobuz_link() -> None:
+    """A Qobuz artist mapping is reverse-looked up through its Qobuz page."""
+    qobuz_url = "https://open.qobuz.com/artist/43840"
+    provider, get_data = _routed_provider(
+        {
+            qobuz_url: _url_lookup("artist", RADIOHEAD_MBID),
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    artist = _artist_item(mappings={_mapping("qobuz", "43840", qobuz_url)})
+
+    resolved = await provider.resolve_artist(artist, [], [])
+
+    assert resolved is not None
+    assert resolved.id == RADIOHEAD_MBID
+    assert _requested(get_data) == [qobuz_url, f"artist/{RADIOHEAD_MBID}"]
 
 
 def test_reverse_lookup_urls_are_capped_at_three() -> None:

@@ -128,6 +128,7 @@ from music_assistant.providers.plex.helpers import (
     PODCAST_FEATURES,
     SUPPORTED_FEATURES,
     PlexServerAccessError,
+    configure_plex_identity,
     extract_library_name,
     get_explicit,
     get_favorite_from_rating,
@@ -180,6 +181,7 @@ async def setup(
     if not (config.setup_data.get(CONF_AUTH_TOKEN) or config.get_value(CONF_AUTH_TOKEN)):
         raise LoginFailed(ERR_INVALID_CREDENTIALS)
 
+    configure_plex_identity(mass.server_id)
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -203,6 +205,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     _unsubscribe_sync_completed: Callable[[], None] | None = None
     _content_changed_at: str | None = None
     _recheck_after_sync: bool = False
+    _verify_ssl: bool = True
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -329,6 +332,12 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
 
         library_name = extract_library_name(str(self.get_setup_value(CONF_LIBRARY_ID)))
+        # an http local server has nothing to verify
+        self._verify_ssl = (
+            bool(self.get_setup_value(CONF_LOCAL_SERVER_VERIFY_CERT))
+            if self.get_setup_value(CONF_LOCAL_SERVER_SSL)
+            else True
+        )
 
         def connect() -> PlexServer:
             try:
@@ -337,15 +346,6 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                     bool(self.get_setup_value(CONF_LOCAL_SERVER_VERIFY_CERT))
                     if self.get_setup_value(CONF_LOCAL_SERVER_SSL)
                     else False
-                )
-                # Add Music Assistant client identification headers
-                session.headers.update(
-                    {
-                        "X-Plex-Client-Identifier": self.instance_id,
-                        "X-Plex-Product": "Music Assistant",
-                        "X-Plex-Platform": "Music Assistant",
-                        "X-Plex-Version": self.mass.version,
-                    }
                 )
                 local_server_protocol = (
                     "https" if self.get_setup_value(CONF_LOCAL_SERVER_SSL) else "http"
@@ -1073,6 +1073,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             data=plex_track,
             can_seek=True,
             allow_seek=True,
+            verify_ssl=self._verify_ssl,
         )
         if loudness:
             stream_details.loudness, stream_details.loudness_album = loudness
@@ -1105,7 +1106,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                 stream_details.audio_format.bit_depth = audio_stream.bitDepth
 
         else:
-            media_info = await async_parse_tags(download_url)
+            media_info = await async_parse_tags(download_url, verify_ssl=self._verify_ssl)
             stream_details.path = download_url
             stream_details.audio_format.channels = media_info.channels
             stream_details.audio_format.content_type = ContentType.try_parse(media_info.format)
@@ -1620,8 +1621,18 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
-        if images := get_thumbnail_images(plex_playlist, self.instance_id):
-            playlist.metadata.images = images
+        # plexapi aliases Playlist.thumb to the generated composite, which hides a custom poster
+        if thumb := plex_playlist._data.attrib.get("thumb") or plex_playlist.composite:
+            playlist.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=thumb,
+                        provider=self.instance_id,
+                        remotely_accessible=False,
+                    )
+                ]
+            )
         playlist.is_editable = not plex_playlist.smart
         return playlist
 
@@ -2130,6 +2141,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                 path=self._get_transcode_url(plex_track, quality_bitrate),
                 can_seek=True,
                 allow_seek=True,
+                verify_ssl=self._verify_ssl,
             )
 
         return StreamDetails(
@@ -2142,6 +2154,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             path=parts[0].path if len(parts) == 1 else parts,
             can_seek=True,
             allow_seek=True,
+            verify_ssl=self._verify_ssl,
         )
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
@@ -2391,6 +2404,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             path=download_url,
             can_seek=True,
             allow_seek=True,
+            verify_ssl=self._verify_ssl,
         )
 
 

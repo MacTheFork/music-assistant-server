@@ -14,9 +14,9 @@ from time import time
 from typing import Any, Literal
 
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from ytmusicapi import LikeStatus
-from ytmusicapi.exceptions import YTMusicError
+from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
 
@@ -46,6 +46,30 @@ async def get_artist(
         return artist
 
     return await _run_ytmusic(_get_artist)
+
+
+async def get_artist_albums(
+    channel_id: str,
+    params: str,
+    headers: dict[str, str],
+    language: str = "en",
+    user: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Async wrapper around the ytmusicapi get_artist_albums function.
+
+    :param channel_id: The browseId of an artist section (albums/singles/shows).
+    :param params: The params value from that same section, paired with channel_id.
+    :param headers: Auth headers for the YTMusic client.
+    :param language: Response language.
+    :param user: Optional YTMusic brand-account user id.
+    """
+
+    def _get_artist_albums() -> list[dict[str, Any]]:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        return ytm.get_artist_albums(channelId=channel_id, params=params, limit=None)
+
+    return await _run_ytmusic(_get_artist_albums)
 
 
 async def get_album(
@@ -143,7 +167,11 @@ async def get_podcast(
 
     def _get_podcast() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
-        podcast_obj = ytm.get_podcast(playlistId=prov_podcast_id)
+        try:
+            podcast_obj = ytm.get_podcast(playlistId=prov_podcast_id)
+        except YTMusicServerError as err:
+            _raise_if_rejected_id(err, f"Podcast {prov_podcast_id} not found on YouTube Music")
+            raise
         if "podcastId" not in podcast_obj:
             podcast_obj["podcastId"] = prov_podcast_id
         return podcast_obj
@@ -465,3 +493,10 @@ def _raise_if_signed_out(err: Exception) -> None:
         "Your YouTube Music session is no longer valid. "
         "Please reconfigure this provider with a fresh cookie."
     ) from err
+
+
+def _raise_if_rejected_id(err: YTMusicServerError, message: str) -> None:
+    """Raise MediaNotFoundError if YouTube rejected the requested id."""
+    # ytmusicapi only exposes the HTTP status through the error message
+    if str(err).startswith(("Server returned HTTP 400", "Server returned HTTP 404")):
+        raise MediaNotFoundError(message) from err

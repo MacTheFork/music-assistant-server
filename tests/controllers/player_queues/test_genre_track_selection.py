@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import cast
+import logging
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -43,7 +44,7 @@ async def test_genre_tracks_skip_failing_artist() -> None:
     """One artist whose tracks cannot be fetched is skipped; the other artists still contribute."""
     fake = _fake_resolver([], [_artist("Broken"), _artist("Fine")])
 
-    async def _top_tracks(item_id: str, _provider: str) -> list[Track]:
+    async def _top_tracks(item_id: str, _provider: str, **_kwargs: Any) -> list[Track]:
         if item_id == "Broken":
             raise MediaNotFoundError("provider returned garbage")
         return [_track("Song")]
@@ -53,7 +54,9 @@ async def test_genre_tracks_skip_failing_artist() -> None:
     result = await MediaResolver.get_genre_tracks(cast("MediaResolver", fake), _genre(), None)
 
     assert [track.name for track in result] == ["Song"]
-    fake.logger.warning.assert_called_once()
+    # an artist a provider no longer lists is noted, not warned about on every play
+    fake.logger.log.assert_called_once()
+    assert fake.logger.log.call_args.args[0] == logging.DEBUG
 
 
 async def test_genre_tracks_fall_back_when_top_tracks_are_unavailable() -> None:
@@ -65,8 +68,8 @@ async def test_genre_tracks_fall_back_when_top_tracks_are_unavailable() -> None:
     result = await MediaResolver.get_genre_tracks(cast("MediaResolver", fake), _genre(), None)
 
     assert [track.name for track in result] == ["Song"]
-    fake.mass.music.artists.tracks.assert_awaited_once_with("Artist", "test")
-    fake.logger.warning.assert_not_called()
+    fake.mass.music.artists.tracks.assert_awaited_once_with("Artist", "test", limit=None)
+    fake.logger.log.assert_not_called()
 
 
 async def test_genre_tracks_skip_failing_album() -> None:
@@ -84,7 +87,8 @@ async def test_genre_tracks_skip_failing_album() -> None:
     result = await MediaResolver.get_genre_tracks(cast("MediaResolver", fake), _genre(), None)
 
     assert [track.name for track in result] == ["Song"]
-    fake.logger.warning.assert_called_once()
+    fake.logger.log.assert_called_once()
+    assert fake.logger.log.call_args.args[0] == logging.DEBUG
 
 
 async def test_genre_tracks_raise_when_nothing_playable() -> None:

@@ -8,7 +8,7 @@ import importlib
 import logging
 import time
 from collections import Counter
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache
@@ -82,6 +82,7 @@ from .helpers import (
     determine_recommendation_icon,
     get_album,
     get_artist,
+    get_artist_albums,
     get_home,
     get_library_albums,
     get_library_artists,
@@ -110,8 +111,8 @@ if TYPE_CHECKING:
 
 
 CONF_COOKIE = "cookie"
-CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"
-DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"
+CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
+DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
@@ -545,20 +546,73 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         return artists[:limit]
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, cache_checksum="v1", allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
-        if "albums" in artist_obj and "results" in artist_obj["albums"]:
-            albums = []
-            for album_obj in artist_obj["albums"]["results"]:
-                if "artists" not in album_obj:
+
+        # get_artist() only embeds ~10 item previews, so fetch each section in full.
+        # "singles" covers singles and EPs, "shows" covers radio shows and audio dramas.
+        sections = [
+            (key, section)
+            for key in ("albums", "singles", "shows")
+            if (section := artist_obj.get(key))
+        ]
+        to_hydrate = [
+            (key, section)
+            for key, section in sections
+            if section.get("browseId") and section.get("params")
+        ]
+        hydrated_sections = await asyncio.gather(
+            *(
+                get_artist_albums(
+                    channel_id=section["browseId"],
+                    params=section["params"],
+                    headers=self._headers,
+                    language=self.language,
+                    user=self._yt_user,
+                )
+                for _key, section in to_hydrate
+            ),
+            return_exceptions=True,
+        )
+        sections_by_key = dict(
+            zip((key for key, _section in to_hydrate), hydrated_sections, strict=True)
+        )
+
+        seen: set[str] = set()
+        albums: list[Album] = []
+        for key, section in sections:
+            result = sections_by_key.get(key)
+            if isinstance(result, BaseException):
+                if isinstance(result, (KeyError, IndexError, TypeError)):
+                    # ytmusicapi fails to parse some empty sections; keep the preview instead.
+                    self.logger.warning(
+                        "Failed to hydrate YouTube Music artist %s section %r, "
+                        "using the inline preview instead",
+                        artist_obj.get("name", prov_artist_id),
+                        key,
+                        exc_info=result,
+                    )
+                    items = section.get("results", [])
+                else:
+                    # Network/auth errors should not be cached as a complete discography.
+                    raise result
+            else:
+                items = result if result is not None else section.get("results", [])
+
+            for album_obj in items:
+                browse_id = album_obj.get("browseId")
+                if not browse_id or browse_id in seen:
+                    continue
+                seen.add(browse_id)
+                if not album_obj.get("artists"):
                     album_obj["artists"] = [
                         {"id": artist_obj["channelId"], "name": artist_obj["name"]}
                     ]
-                albums.append(self._parse_album(album_obj, album_obj["browseId"]))
-            return albums
-        return []
+                albums.append(self._parse_album(album_obj, browse_id))
+
+        return albums
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -835,15 +889,21 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                         recommended_item["id"] = recommended_item["playlistId"]
                         del recommended_item["playlistId"]
                         folder.items.append(self._parse_playlist(recommended_item))
+                    elif recommended_item.get("subscribers"):
+                        # Probably artist, but it's in that same weird album-like format
+                        # that you see for the get_similar_artists payload
+                        fake_artist = {
+                            "channelId": recommended_item["browseId"],
+                            "name": recommended_item["title"],
+                            "thumbnails": recommended_item["thumbnails"],
+                        }
+                        folder.items.append(self._parse_artist(fake_artist))
                     elif recommended_item.get("browseId"):
                         if podcast := self._parse_browse_podcast(recommended_item):
                             folder.items.append(podcast)
                         else:
                             # Probably an album
                             folder.items.append(self._parse_album(recommended_item))
-                    elif recommended_item.get("subscribers"):
-                        # Probably artist
-                        folder.items.append(self._parse_album(recommended_item))
                     elif recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
                         # Podcast episodes show up here without a videoId/browseId,
                         # so there is no playable item to build from them
@@ -1221,7 +1281,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 episode.metadata.release_date = datetime.fromisoformat(release_date)
         return episode
 
-    async def _get_stream_format(self, item_id: str) -> dict[str, Any]:
+    async def _get_stream_format(
+        self, item_id: str, *, require_login: bool = False
+    ) -> dict[str, Any]:
         """Figure out the stream URL to use and return the highest quality."""
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
@@ -1245,10 +1307,20 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                had_login = _has_login_cookie(ydl.cookiejar)
                 try:
                     info = ydl.extract_info(url, download=False)
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
+                # YouTube clears LOGIN_INFO when it invalidates the session, which is how
+                # yt-dlp detects rotated cookies
+                if require_login and had_login and not _has_login_cookie(ydl.cookiejar):
+                    raise LoginFailed(
+                        "Your YouTube Music cookies have expired. "
+                        "Please reconfigure this provider with fresh cookies.",
+                        translation_key="cookies_expired",
+                        translation_owner=self.translation_owner,
+                    )
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
                 stream_format: dict[str, Any] | None = next(
                     format_selector({"formats": info["formats"]}), None
@@ -1290,7 +1362,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""
-        stream_format = await self._get_stream_format(YTM_PREMIUM_CHECK_TRACK_ID)
+        stream_format = await self._get_stream_format(
+            YTM_PREMIUM_CHECK_TRACK_ID, require_login=True
+        )
         # Only premium users can stream the HQ stream of this song
         format_id: str = stream_format["format_id"]
         return format_id == "141"
@@ -1312,7 +1386,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 if "maxresdefault" in url or image_ratio > 2.0
                 else ImageType.THUMB
             )
-            if "=w" not in url and width < 500:
+            if "=w" not in url and width < 400:
                 continue
             # if the size is in the url, we can actually request a higher thumb
             if "=w" in url and width < 600:
@@ -1353,6 +1427,11 @@ def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:
         case "DISLIKE":
             return False
     return None
+
+
+def _has_login_cookie(cookiejar: Iterable[Any]) -> bool:
+    """Return whether the cookie jar holds the YouTube LOGIN_INFO session cookie."""
+    return any(cookie.name == "LOGIN_INFO" for cookie in cookiejar)
 
 
 @lru_cache

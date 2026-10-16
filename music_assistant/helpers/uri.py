@@ -109,7 +109,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type = MediaType.UNKNOWN
             item_id = uri
         else:
-            raise KeyError
+            raise KeyError  # noqa: TRY301 - converted to InvalidProviderURI below
     except (TypeError, AttributeError, ValueError, KeyError, IndexError) as err:
         # IndexError covers truncated share URLs with no path segments.
         msg = f"Not a valid Music Assistant uri: {uri}"
@@ -169,6 +169,10 @@ def canonical_provider_url(
         return f"https://music.apple.com/{storefront}/{kind}/{item_id}"
     if provider_domain == "ytmusic" and media_type == MediaType.ARTIST:
         return f"https://music.youtube.com/channel/{item_id}"
+    # MusicBrainz mostly stores Qobuz albums as www.qobuz.com/<locale>/album/<slug>/<id>,
+    # which an id alone cannot rebuild. A performer without a Qobuz page has its name as id.
+    if provider_domain == "qobuz" and media_type == MediaType.ARTIST and item_id.isdigit():
+        return f"https://open.qobuz.com/artist/{item_id}"
     return None
 
 
