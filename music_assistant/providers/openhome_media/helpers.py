@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 import defusedxml.ElementTree as DefusedET
@@ -40,7 +41,7 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
     async def _handle_request(self, request: Request) -> Response:
         """Handle incoming requests."""
         if request.method != "NOTIFY":
-            return Response(status=405)
+            return Response(status=HTTPStatus.METHOD_NOT_ALLOWED)
 
         # follow DLNA example and decode leniently.
         body_bytes = await request.read()
@@ -62,7 +63,7 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
                 request.remote,
                 err,
             )
-            return Response(status=400)
+            return Response(status=HTTPStatus.BAD_REQUEST)
 
         return Response(status=status)
 
