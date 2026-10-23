@@ -15,8 +15,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
 
-from music_assistant.providers.openhome_media.constants import CALLBACK_URL
-
+from music_assistant.providers.openhome_media.constants import CALLBACK_PATH
 
 class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
     """Notify server for async_upnp_client which uses the MA webserver."""
@@ -28,15 +27,15 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
     ) -> None:
         """Initialize."""
         self.mass = mass
-        self.event_handler = UpnpEventHandler(self, requester)
+        self.event_handler = UpnpEventHandler(notify_server=self, requester=requester)
         self.mass.streams.register_dynamic_route(
-            path=CALLBACK_URL, handler=self._handle_request, method="NOTIFY"
+            path=f"{CALLBACK_PATH}", handler=self._handle_request, method="NOTIFY"
         )
 
     @property
     def callback_url(self) -> str:
         """Return callback URL on which we are callable."""
-        return f"{self.mass.streams.base_url}{CALLBACK_URL}"
+        return f"{self.mass.streams.base_url}{CALLBACK_PATH}"
 
     async def _handle_request(self, request: Request) -> Response:
         """Handle incoming requests."""
@@ -89,5 +88,4 @@ def get_source_index_of_type(source_xml: str, source_type: str) -> int | None:
         if name_elem is not None and name_elem.text == source_type:
             source_index = i
             break
-
     return source_index
