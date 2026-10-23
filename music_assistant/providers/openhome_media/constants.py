@@ -5,7 +5,7 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_ENTRY_FLOW_MODE
 
-CALLBACK_URL: str = "/notify_ohm"
+CALLBACK_PATH: str = "/notify_ohm"  # avoid colliding with DLNA default
 
 RADIO = "Radio"
 PLAYLIST = "Playlist"
