@@ -66,17 +66,6 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
 
         return Response(status=status)
 
-
-def create_short_player_id(uuid: str) -> str:
-    """Return a short identifier from the UDN of the device."""
-    # TODO params
-    short_id = uuid.removeprefix("uuid:").lower()
-    if uuid.count("-") == 4:  # looks like a MAC address
-        between_dashes = uuid[uuid.find("-") + 1 : uuid.rfind("-")]
-        short_id = between_dashes.replace("-", "")
-    return short_id
-
-
 def get_source_index_of_type(source_xml: str, source_type: str) -> int | None:
     """Return index in source_xml for source with type source_type."""
     # TODO params
