@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 from music_assistant.providers.openhome_media.constants import CALLBACK_PATH
 
+
 class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
     """Notify server for async_upnp_client which uses the MA webserver."""
 
@@ -65,6 +66,7 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
             return Response(status=HTTPStatus.BAD_REQUEST)
 
         return Response(status=status)
+
 
 def get_source_index_of_type(source_xml: str, source_type: str) -> int | None:
     """Return index in source_xml for source with type source_type."""

@@ -7,11 +7,11 @@ import time
 from hashlib import shake_128
 from typing import TYPE_CHECKING
 
-from async_upnp_client.aiohttp import AiohttpSessionRequester, AiohttpRequester
+from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_PLAYERS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.openhome_media.constants import CALLBACK_PATH
@@ -38,16 +38,21 @@ class OpenHomePlayerProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-
         self.lock = asyncio.Lock()
         self._ignored_udns = set()
-        self.requester = AiohttpSessionRequester(session=self.mass.http_session_no_ssl, timeout=30, with_sleep=True)
+        self.requester = AiohttpSessionRequester(
+            session=self.mass.http_session_no_ssl, timeout=30, with_sleep=True
+        )
         self.upnp_factory = UpnpFactory(requester=self.requester, non_strict=True)
-        self.notify_server = OpenHomeNotifyServer(requester=self.requester, mass=self.mass)
+        self.notify_server = OpenHomeNotifyServer(
+            requester=self.requester, mass=self.mass
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        self.mass.streams.unregister_dynamic_route(path=f"{CALLBACK_PATH}", method="NOTIFY")
+        self.mass.streams.unregister_dynamic_route(
+            path=f"{CALLBACK_PATH}", method="NOTIFY"
+        )
         self._ignored_udns = set()
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
@@ -108,7 +113,9 @@ class OpenHomePlayerProvider(PlayerProvider):
 
         While hash collisions are possible, they are very unlikely.
         """
-        hash_id = shake_128(udn.removeprefix("uuid:").encode("utf-8"), usedforsecurity=False).hexdigest(6)
+        hash_id = shake_128(
+            udn.removeprefix("uuid:").encode("utf-8"), usedforsecurity=False
+        ).hexdigest(6)
         player_id = f"ohm{hash_id}"
         self.logger.debug("Hashed udn %s to player id %s", udn, player_id)
 
@@ -126,10 +133,15 @@ class OpenHomePlayerProvider(PlayerProvider):
             # generate a fixed length hash as player_id for cosmetic consistency
             player_id: str = self.hash_player_id(udn)
 
-            if openhome_player := self.mass.players.get_player(player_id):  # use player_id instead of udn
+            if openhome_player := self.mass.players.get_player(
+                player_id
+            ):  # use player_id instead of udn
                 # existing player
                 assert isinstance(openhome_player, OpenHomePlayer)
-                if openhome_player.description_url == description_url and openhome_player.available:
+                if (
+                    openhome_player.description_url == description_url
+                    and openhome_player.available
+                ):
                     # nothing to do, device is already connected
                     return
                 # update description url to newly discovered one
@@ -157,5 +169,5 @@ class OpenHomePlayerProvider(PlayerProvider):
 
             # Setup will return False if the device should be ignored (e.g., passive speaker)
             if not await openhome_player.setup():
-                self.logger.debug("Setup failed for %s", udn, player_id)
+                self.logger.debug("Setup failed for %s", udn)
                 self._ignored_udns.add(udn)
