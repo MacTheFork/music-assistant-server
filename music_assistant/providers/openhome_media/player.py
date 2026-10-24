@@ -32,7 +32,6 @@ from async_upnp_client.profiles.ohmedia import (
     TransportStateAllowedValues,
     VolumeState,
 )
-
 from didl_lite import didl_lite
 from music_assistant_models.enums import (
     IdentifierType,
@@ -55,13 +54,16 @@ from music_assistant.providers.openhome_media.constants import (
     RADIO,
     radio_option,
 )
-from music_assistant.providers.openhome_media.helpers import get_source_index_of_type, OpenHomeNotifyServer
+from music_assistant.providers.openhome_media.helpers import (
+    get_source_index_of_type,
+)
 
 if TYPE_CHECKING:
-    from async_upnp_client.client import UpnpService, UpnpStateVariable, UpnpDevice
+    from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.player_queue import PlayerQueue
+
     from music_assistant.providers.openhome_media.provider import OpenHomePlayerProvider
 
 
@@ -71,7 +73,9 @@ def catch_request_errors[OpenHomePlayerT: "OpenHomePlayer", **P, R](
     """Catch UpnpError errors."""
 
     @functools.wraps(func)
-    async def wrapper(self: OpenHomePlayerT, *args: P.args, **kwargs: P.kwargs) -> R | None:
+    async def wrapper(
+        self: OpenHomePlayerT, *args: P.args, **kwargs: P.kwargs
+    ) -> R | None:
         """Catch UpnpError errors and check availability before and after request."""
         self.last_command = time.time()
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -81,7 +85,9 @@ def catch_request_errors[OpenHomePlayerT: "OpenHomePlayer", **P, R](
                 self.display_name,
             )
         if not self.available and func.__name__ not in ("pause", "stop"):
-            self.logger.warning("Device disappeared when trying to call %s", func.__name__)
+            self.logger.warning(
+                "Device disappeared when trying to call %s", func.__name__
+            )
             return None
         try:
             return await func(self, *args, **kwargs)
@@ -92,6 +98,7 @@ def catch_request_errors[OpenHomePlayerT: "OpenHomePlayer", **P, R](
             else:
                 self.logger.error("Error during call %s: %r", func.__name__, str(err))
         return None
+
     return wrapper  # type: ignore[return-value]
 
 
@@ -113,12 +120,14 @@ class OpenHomePlayer(Player):
         self.profile: OhmDevice | None = device
         self.upnp_device: UpnpDevice | None = None
         self.description_url: str = description_url
-        self.last_seen: float= time.time()
+        self.last_seen: float = time.time()
         self.lock = asyncio.Lock()  # Held when connecting or disconnecting the device
         self.force_poll = False
         self.state_update_pending: bool = False
         self.state_update_period_ms: int = 1000
-        self.product_source_xml: Element | None = None  # state var converted from string
+        self.product_source_xml: Element | None = (
+            None  # state var converted from string
+        )
         self._observed_playback_state: PlaybackState | None = None
         self._playing_since: float | None = None
         self._attr_name: str = "Linn/OpenHome Media Player"
@@ -160,7 +169,6 @@ class OpenHomePlayer(Player):
 
         :return: True if setup was successful, False if device should be ignored.
         """
-
         # self.logger.debug("Setup: %s", self.player_id)
 
         await self._device_connect()
@@ -174,7 +182,9 @@ class OpenHomePlayer(Player):
         await self.mass.players.register_or_update(self)
 
         assert self.mass.players is not None
-        _attr_active_source = self.mass.players.get_player(self.player_id).protocol_parent_id
+        _attr_active_source = self.mass.players.get_player(
+            self.player_id
+        ).protocol_parent_id
         return True
 
     def set_static_attributes(self) -> None:
@@ -196,17 +206,23 @@ class OpenHomePlayer(Player):
         assert self.profile is not None  # for type checking
 
         if self.force_poll:
-            await self.profile.async_update_state_variables()  # poll all state variables
+            await (
+                self.profile.async_update_state_variables()
+            )  # poll all state variables
 
         self._attr_powered = not self.profile.product_standby
         # self._attr_volume_muted = self.profile.is_muted
 
         # should a device report an unknown volume, retain unknown instead of collapsing to 0/unmuted
         volume_level = self.profile.volume
-        self._attr_volume_level = int(volume_level) if volume_level is not None else None
+        self._attr_volume_level = (
+            int(volume_level) if volume_level is not None else None
+        )
 
         # determine playback state
-        _playback_state = self._transport_state_to_playback_state(self.profile.transport_state)
+        _playback_state = self._transport_state_to_playback_state(
+            self.profile.transport_state
+        )
         assert _playback_state is not None  # for type checking
         prev_playback_state = self._observed_playback_state
         self._observed_playback_state = _playback_state
@@ -229,12 +245,16 @@ class OpenHomePlayer(Player):
         except ParseError as err:
             # drop the metadata but keep the player updated
             self.logger.debug(
-                "Ignoring malformed media metadata from device %s: %s", self.display_name, err
+                "Ignoring malformed media metadata from device %s: %s",
+                self.display_name,
+                err,
             )
             media_title = media_artist = media_album = media_image_url = None
             media_duration = None
 
-        _track_uri: str = str(self.profile.info_uri) if self.profile.info_uri is not None else ""
+        _track_uri: str = (
+            str(self.profile.info_uri) if self.profile.info_uri is not None else ""
+        )
         self.set_current_media(
             uri=_track_uri,
             clear_all=True,
@@ -246,23 +266,25 @@ class OpenHomePlayer(Player):
         )
 
         if self.product_source_xml:
-            self._attr_source_list = self._source_list_from_source_xml(self.product_source_xml)
+            self._attr_source_list = self._source_list_from_source_xml(
+                self.product_source_xml
+            )
         else:
             self._attr_source_list = []
 
     @property
     def poll_interval(self) -> int:
         """Return the interval in seconds to poll the player for state updates."""
-        return (
-            5 if self._attr_playback_state == PlaybackState.PLAYING else 30
-        )
+        return 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         config_entries: list[ConfigEntry] = [*PLAYER_CONFIG_ENTRIES]
 
         if (has_radio := self.profile.has_source_type(ProductSourceType.RADIO)) is None:
-            await self.profile._async_poll_state_variables(Service.PRODUCT, ProductState.SOURCE_XML)
+            await self.profile._async_poll_state_variables(
+                Service.PRODUCT, ProductState.SOURCE_XML
+            )
             has_radio = self.profile.has_source_type(ProductSourceType.RADIO)
 
         if has_radio:
@@ -313,7 +335,9 @@ class OpenHomePlayer(Player):
         try:
             await self.profile.async_play()
         except UpnpError:
-            self.logger.warning("Could not execute PLAY command on player %s", self.display_name)
+            self.logger.warning(
+                "Could not execute PLAY command on player %s", self.display_name
+            )
 
     @catch_request_errors
     async def stop(self) -> None:
@@ -323,7 +347,9 @@ class OpenHomePlayer(Player):
         try:
             await self.profile.async_stop()
         except UpnpError:
-            self.logger.debug("Could not execute STOP command on player %s", self.display_name)
+            self.logger.debug(
+                "Could not execute STOP command on player %s", self.display_name
+            )
 
     @catch_request_errors
     async def pause(self) -> None:
@@ -335,7 +361,9 @@ class OpenHomePlayer(Player):
             Service.TRANSPORT, TransportState.CAN_PAUSE
         )
         if can_pause is None:
-            await self.profile._async_poll_state_variables(Service.TRANSPORT, Transport.STREAM_INFO)
+            await self.profile._async_poll_state_variables(
+                Service.TRANSPORT, Transport.STREAM_INFO
+            )
             can_pause = self.profile.get_state_variable_value(
                 Service.TRANSPORT, TransportState.CAN_PAUSE
             )
@@ -374,7 +402,9 @@ class OpenHomePlayer(Player):
         if self.profile.has_transport_seek_second_absolute:
             stream_id = self.profile.transport_stream_id
             if stream_id:
-                await self.profile.async_transport_seek_second_absolute(stream_id, position)
+                await self.profile.async_transport_seek_second_absolute(
+                    stream_id, position
+                )
                 return
         active_source_type = await self.profile.async_active_source_type()
         if active_source_type == ProductSourceType.RADIO:
@@ -405,7 +435,9 @@ class OpenHomePlayer(Player):
             if selected_play_source == RADIO:
                 # workaround to avoid buffering problem with Linn DSM - flip source away from Radio
                 if self.profile.product_source_xml is not None:
-                    radio_index = get_source_index_of_type(self.profile.product_source_xml, RADIO)
+                    radio_index = get_source_index_of_type(
+                        self.profile.product_source_xml, RADIO
+                    )
                     if radio_index and radio_index != 0:
                         new_index = 0
                 await self.profile.async_product_set_source_index(new_index)  # type: ignore[possibly-undefined]
@@ -415,10 +447,14 @@ class OpenHomePlayer(Player):
             else:  # use Playlist
                 last_id = await self.profile.async_playlist_last_id()
                 new_id = (
-                    await self.profile.async_playlist_insert(last_id, url, didl_metadata)
+                    await self.profile.async_playlist_insert(
+                        last_id, url, didl_metadata
+                    )
                 ).get("NewId")
                 if new_id is not None:
-                    await self.profile.async_playlist_seek_id(new_id)  # play track at new_id
+                    await self.profile.async_playlist_seek_id(
+                        new_id
+                    )  # play track at new_id
         except Exception:
             self._attr_playback_state = prev_state  # rollback optimistic state
             raise
@@ -433,7 +469,9 @@ class OpenHomePlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         assert self.profile is not None  # for type checking
-        track_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        track_url = await self.provider.mass.streams.resolve_stream_url(
+            self.player_id, media
+        )
         didl_metadata = create_didl_metadata(media, track_url)
 
         self.active_queue = self.mass.player_queues.get_active_queue(self.player_id)
@@ -471,7 +509,9 @@ class OpenHomePlayer(Player):
 
             if uri != track_url:
                 last_id = await self.profile.async_playlist_last_id()
-                await self.profile.async_playlist_insert(last_id, track_url, didl_metadata)
+                await self.profile.async_playlist_insert(
+                    last_id, track_url, didl_metadata
+                )
         self.update_state()
 
     def cancel_next_media(self) -> None:
@@ -503,7 +543,6 @@ class OpenHomePlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for all state variables (fallback mode only)."""
-
         self.force_poll = False
         # try to reconnect the device if the connection was lost
         if self.profile is None:
@@ -520,7 +559,9 @@ class OpenHomePlayer(Player):
         assert self.profile is not None
         try:
             now = time.time()
-            do_ping = self.force_poll or (now - self.last_seen) > 60 # TODO determine best value for this
+            do_ping = (
+                self.force_poll or (now - self.last_seen) > 60
+            )  # TODO determine best value for this
 
             with suppress(ValueError, ParseError):
                 self.logger.debug("Poll ALL state variables: %s", self._attr_name)
@@ -587,7 +628,9 @@ class OpenHomePlayer(Player):
         return player_source_list
 
     @staticmethod
-    def _transport_state_to_playback_state(transport_state: str | None) -> PlaybackState:
+    def _transport_state_to_playback_state(
+        transport_state: str | None,
+    ) -> PlaybackState:
         """Return MA playback state from Linn/OpenHome Media device transport state."""
         match transport_state:
             case TransportStateAllowedValues.PLAYING:
@@ -618,7 +661,9 @@ class OpenHomePlayer(Player):
             if TYPE_CHECKING:
                 assert isinstance(self.provider, OpenHomePlayerProvider)
             # if self.upnp_device is None:
-            self.upnp_device = await self.provider.upnp_factory.async_create_device(self.description_url)
+            self.upnp_device = await self.provider.upnp_factory.async_create_device(
+                self.description_url
+            )
 
             self._attr_device_info = DeviceInfo(
                 model=self.upnp_device.model_name,
@@ -627,7 +672,9 @@ class OpenHomePlayer(Player):
 
             # Create profile wrapper
             if OhmDevice.is_profile_device(self.upnp_device):
-                self.profile = OhmDevice(self.upnp_device, self.provider.notify_server.event_handler)
+                self.profile = OhmDevice(
+                    self.upnp_device, self.provider.notify_server.event_handler
+                )
             else:
                 return
 
@@ -664,17 +711,19 @@ class OpenHomePlayer(Player):
                 # async_upnp_client.profiles.profile.SUBSCRIBE_TIMEOUT = timedelta(minutes=30)
                 # self.profile.SUBSCRIBE_TIMEOUT = timedelta(minutes=30)  # default currently is 9 but Linn caps at 30
                 await self.profile.async_subscribe_services(auto_resubscribe=True)
-            except UpnpResponseError as err:
+            except UpnpResponseError:
                 # Device rejected subscription request.
                 # This is OK, variables will be polled instead.
                 self.force_poll = True
-            except UpnpError as err:
+            except UpnpError:
                 # Don't leave the device half-constructed
                 self.profile.on_event = None
                 self.profile = None
                 raise
             else:
-                self.logger.debug("async_subscribe_services was successful %s", self._attr_device_info)
+                self.logger.debug(
+                    "async_subscribe_services was successful %s", self._attr_device_info
+                )
                 # Identifiers in descending priority MAC_ADDRESS, UUID, IP_ADDRESS
                 # MAC_ADDRESS is extracted from UUID if format of UDN is UUID-like
                 # MAC_ADDRESS will be validated by player controller enrich_device_mac_address
@@ -682,18 +731,25 @@ class OpenHomePlayer(Player):
                 assert self.profile is not None
                 if OpenHomePlayer.is_valid_uuid(self.profile.device.udn):
                     # MAC address frequently part of udn - will be checked by arp later
-                    mac_address = OpenHomePlayer.get_mac_from_udn(self.profile.device.udn)
-                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+                    mac_address = OpenHomePlayer.get_mac_from_udn(
+                        self.profile.device.udn
+                    )
+                    self._attr_device_info.add_identifier(
+                        IdentifierType.MAC_ADDRESS, mac_address
+                    )
 
                     # Add UDN as identifier type uuid for identifying player across protocols
                     # Strip the common to all "uuid:" prefix if present
                     self._attr_device_info.add_identifier(
-                        IdentifierType.UUID, self.profile.device.udn.removeprefix("uuid:")
+                        IdentifierType.UUID,
+                        self.profile.device.udn.removeprefix("uuid:"),
                     )
 
                 # Try to extract just the IP from the URL for device matching
                 # All currently known examples have a higher priority identifier available
-                ip_address = self.profile.device.presentation_url or self.description_url
+                ip_address = (
+                    self.profile.device.presentation_url or self.description_url
+                )
                 with suppress(ValueError):
                     parsed = urlparse(ip_address)
                     if parsed.hostname:
@@ -705,7 +761,9 @@ class OpenHomePlayer(Player):
         """Destroy connections to the device."""
         async with self.lock:
             if not self.profile:
-                self.logger.debug("Cannot disconnect from a device that's not connected")
+                self.logger.debug(
+                    "Cannot disconnect from a device that's not connected"
+                )
                 return
 
             self.logger.debug("Disconnecting from %s", self.profile.name)
@@ -722,7 +780,7 @@ class OpenHomePlayer(Player):
         await asyncio.sleep(self.state_update_period_ms / 1000.0)
         self.update_state()
 
-    def _handle_event(  # noqa: PLR0915
+    def _handle_event(
         self,
         service: UpnpService,
         state_variables: Sequence[UpnpStateVariable[Any]],
@@ -759,8 +817,8 @@ class OpenHomePlayer(Player):
                 for sv in state_variables:
                     match sv.name:
                         case PlaylistState.TRANSPORT_STATE:
-                            self._attr_playback_state = self._transport_state_to_playback_state(
-                                sv.value
+                            self._attr_playback_state = (
+                                self._transport_state_to_playback_state(sv.value)
                             )
                         case PlaylistState.REPEAT:
                             self._attr_repeat_state = sv.value
@@ -775,7 +833,9 @@ class OpenHomePlayer(Player):
                         case PlaylistState.PROTOCOL_INFO:
                             pass
                         case _:
-                            self.logger.debug("Unhandled Playlist State Variable %s", sv.name)
+                            self.logger.debug(
+                                "Unhandled Playlist State Variable %s", sv.name
+                            )
             case ServiceId.PRODUCT:
                 for sv in state_variables:
                     match sv.name:
@@ -784,12 +844,24 @@ class OpenHomePlayer(Player):
                         case ProductState.SOURCE_XML:
                             try:
                                 if sv.value:
-                                    self.product_source_xml = DefusedET.fromstring(str(sv.value))
-                            except ParseError, AttributeError, IndexError, KeyError, TypeError:
-                                self.logger.debug("Unable to process Source XML %s", sv.value)
+                                    self.product_source_xml = DefusedET.fromstring(
+                                        str(sv.value)
+                                    )
+                            except (
+                                ParseError,
+                                AttributeError,
+                                IndexError,
+                                KeyError,
+                                TypeError,
+                            ):
+                                self.logger.debug(
+                                    "Unable to process Source XML %s", sv.value
+                                )
                             else:
-                                self._attr_source_list = self._source_list_from_source_xml(
-                                    self.product_source_xml
+                                self._attr_source_list = (
+                                    self._source_list_from_source_xml(
+                                        self.product_source_xml
+                                    )
                                 )
                         case _:
                             pass
@@ -797,8 +869,8 @@ class OpenHomePlayer(Player):
                 for sv in state_variables:
                     match sv.name:
                         case RadioState.TRANSPORT_STATE:
-                            self._attr_playback_state = self._transport_state_to_playback_state(
-                                sv.value
+                            self._attr_playback_state = (
+                                self._transport_state_to_playback_state(sv.value)
                             )
                         case _:
                             pass
@@ -812,8 +884,8 @@ class OpenHomePlayer(Player):
                         case TransportState.STREAM_ID:  # indicates track has changed
                             pass
                         case TransportState.TRANSPORT_STATE:
-                            self._attr_playback_state = self._transport_state_to_playback_state(
-                                sv.value
+                            self._attr_playback_state = (
+                                self._transport_state_to_playback_state(sv.value)
                             )
                         case TransportState.REPEAT:
                             self._attr_repeat_state = sv.value
@@ -848,7 +920,9 @@ class OpenHomePlayer(Player):
             case ServiceId.UPDATE:
                 pass
             case _:
-                self.logger.debug("Unhandled event for service id: %s", service.service_id)
+                self.logger.debug(
+                    "Unhandled event for service id: %s", service.service_id
+                )
 
         self.last_seen = time.time()
 
@@ -871,10 +945,14 @@ class OpenHomePlayer(Player):
             # an unavailable device is reported as such by the state update below
             with suppress(PlayerUnavailableError):
                 await self.poll()
-        prev_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
+        prev_url = (
+            self._attr_current_media.uri if self._attr_current_media is not None else ""
+        )
         prev_state = self.state
         # await self.set_dynamic_attributes()
-        current_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
+        current_url = (
+            self._attr_current_media.uri if self._attr_current_media is not None else ""
+        )
         current_state = self.state
 
         if (prev_url != current_url) or (prev_state != current_state):
