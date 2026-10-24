@@ -451,13 +451,19 @@ class OpenHomePlayer(Player):
             # need duration and elapsed time to calculate this
             remaining_time: float = 0.0
             if queue.current_item.duration:
-                remaining_time = float(queue.current_item.duration) - queue.corrected_elapsed_time
-                if remaining_time < 0:
+                remaining_time = (
+                    float(queue.current_item.duration) - queue.corrected_elapsed_time
+                )
+                if remaining_time <= 0:
                     remaining_time = queue.current_item.duration
+            if self.active_queue.state == PlaybackState.PLAYING:
+                self.mass.call_later(
+                    remaining_time,
+                    self.play_media,
+                    media,
+                    task_id=f"ohm_enqueue_{active_queue_id}",
+                )
 
-            self.mass.call_later(
-                remaining_time, self.play_media, media, task_id=f"ohm_enqueue_{active_queue_id}"
-            )
         else:
             # append track to Playlist only if uri is different
             playlist_id = (await self.profile.async_playlist_id())["Value"]
