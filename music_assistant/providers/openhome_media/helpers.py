@@ -80,3 +80,17 @@ def get_source_index_of_type(source_xml: str, source_type: str) -> int | None:
             source_index = i
             break
     return source_index
+
+
+def time_hms_to_sec(time_str: str) -> int:
+
+    time_str_fmt = time_str.strip(":")
+    if len(time_str_fmt) > 0 and ":" in time_str:
+        time_str_fmt.split(":")
+        seconds = sum(
+            x * int(t or 0)
+            for x, t in zip([1, 60, 3600], reversed(time_str_fmt.split(":")))
+        )
+    else:
+        seconds = int(time_str_fmt or 0)
+    return seconds
