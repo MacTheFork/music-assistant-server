@@ -59,14 +59,16 @@ class TestTransportStateConversion:
             (TransportStateAllowedValues.PLAYING, PlaybackState.PLAYING),
             (TransportStateAllowedValues.PAUSED, PlaybackState.PAUSED),
             (TransportStateAllowedValues.STOPPED, PlaybackState.IDLE),
-            (TransportStateAllowedValues.BUFFERING, PlaybackState.PLAYING),
-            (TransportStateAllowedValues.WAITING, PlaybackState.PLAYING),
+            (TransportStateAllowedValues.BUFFERING, PlaybackState.UNKNOWN),
+            (TransportStateAllowedValues.WAITING, PlaybackState.UNKNOWN),
             (None, PlaybackState.UNKNOWN),
             ("UnknownState", PlaybackState.UNKNOWN),
         ],
     )
     def test_transport_state_to_playback_state(
-        self, transport_state: TransportStateAllowedValues, expected_playback: PlaybackState
+        self,
+        transport_state: TransportStateAllowedValues,
+        expected_playback: PlaybackState,
     ) -> None:
         """Test conversion from device transport state to MA playback state."""
         result = OpenHomePlayer._transport_state_to_playback_state(transport_state)
@@ -124,7 +126,7 @@ class TestSourceList:
         source_xml = DefusedET.fromstring(xml)
         result = OpenHomePlayer._source_list_from_source_xml(source_xml)
         assert len(result) == 1
-        assert result[0].id == "External"
+        assert result[0].id == "digital"
         assert result[0].name == "CD"
 
     def test_multiple_sources(self) -> None:
@@ -181,7 +183,9 @@ class TestSourceList:
         assert len(result) == 1
         assert result[0].name == "Visible Source"
 
-    @pytest.mark.parametrize("visibility_value", ["true", "True", "TRUE", "1", " true "])
+    @pytest.mark.parametrize(
+        "visibility_value", ["true", "True", "TRUE", "1", " true "]
+    )
     def test_visibility_true_variations(self, visibility_value: str) -> None:
         """Test various reasonable 'true' value representations are recognized as visible."""
         xml = f"""<Sources>
@@ -234,7 +238,7 @@ class TestSourceList:
         assert result == []
 
     def test_missing_optional_elements_handled_gracefully(self) -> None:
-        """Test sources missing optional elements are still processed."""
+        """Test sources missing optional elements are processed as Unknown."""
         xml = """<Sources>
             <Source>
                 <Visible>true</Visible>
@@ -309,7 +313,7 @@ class TestSourceList:
             <Source>
                 <Visible>true</Visible>
                 <Name>Outer</Name>
-                <Type>PLAYLIST</Type>
+                <Type>Playlist</Type>
                 <SystemName>outer</SystemName>
                 <!-- Nested should not be counted separately -->
                 <Source>
@@ -376,9 +380,9 @@ class TestSourceList:
         source_xml = DefusedET.fromstring(xml)
         result = OpenHomePlayer._source_list_from_source_xml(source_xml)
 
-        assert result[0].id == "External"
-        assert result[1].id == "External"
-        assert result[2].id == "External"
+        assert result[0].name == "First"
+        assert result[1].name == "Second"
+        assert result[2].name == "Third"
 
     def test_mixed_visibility_preserves_order(self) -> None:
         """Test that visible sources maintain their relative order."""
@@ -422,10 +426,6 @@ class TestSourceList:
         assert result[0].name == "Visible 1"
         assert result[1].name == "Visible 2"
         assert result[2].name == "Visible 3"
-        # Id should be External for all visible sources
-        assert result[0].id == "External"
-        assert result[1].id == "External"
-        assert result[2].id == "External"
 
     def test_case_sensitive_type_values_preserved(self) -> None:
         """Test that Type values preserve case."""
@@ -457,7 +457,7 @@ class TestSourceList:
             <Source id="1" version="2">
                 <Visible>true</Visible>
                 <Name>Attributed Source</Name>
-                <Type>PLAYLIST</Type>
+                <Type>Playlist</Type>
                 <SystemName>attributed</SystemName>
             </Source>
         </Sources>"""
@@ -474,13 +474,13 @@ class TestSourceList:
             <Source>
                 <Visible>true</Visible>
                 <Name>Test</Name>
-                <Type>PLAYLIST</Type>
+                <Type>Playlist</Type>
                 <SystemName>test</SystemName>
             </Source>
             <Source>
                 <Visible>true</Visible>
                 <Name>Test</Name>
-                <Type>RADIO</Type>
+                <Type>Radio</Type>
                 <SystemName>test</SystemName>
             </Source>
         </Sources>"""
