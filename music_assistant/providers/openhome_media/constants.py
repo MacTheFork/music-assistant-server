@@ -1,5 +1,7 @@
 """Constants for the Linn / OpenHome Media Provider."""
 
+from enum import StrEnum
+
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
@@ -7,15 +9,20 @@ from music_assistant.constants import CONF_ENTRY_FLOW_MODE
 
 CALLBACK_PATH: str = "/notify_ohm"  # avoid colliding with DLNA default
 
-RADIO = "Radio"
-PLAYLIST = "Playlist"
-EXTERNAL = "External"
+RADIO: str = "Radio"
+PLAYLIST: str = "Playlist"
+EXTERNAL: str = "External"
 
 radio_option = ConfigValueOption(
-    RADIO, title="Radio", description="Play media by streaming to the player's Radio source"
+    RADIO,
+    title="Radio",
+    description="Play media by streaming to the player's Radio source",
 )
+
 playlist_option = ConfigValueOption(
-    PLAYLIST, title="Playlist", description="Play media by adding to the player's Playlist source"
+    PLAYLIST,
+    title="Playlist",
+    description="Play media by adding to the player's Playlist source",
 )
 
 select_device_options: list[ConfigValueOption] = [
@@ -34,7 +41,24 @@ CONF_SELECT_DEVICE_SOURCE = ConfigEntry(
     requires_reload=True,
 )
 
-PLAYER_CONFIG_ENTRIES: list[ConfigEntry] = [
+PLAYER_CONFIG_ENTRIES: list[ConfigEntry | str] = [
     ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": False}),
     CONF_SELECT_DEVICE_SOURCE,
 ]
+
+
+class PlaybackState(StrEnum):
+    """Enum for the (playback)state of a player."""
+
+    BUFFERING = "buffering"
+    IDLE = "idle"
+    PAUSED = "paused"
+    PLAYING = "playing"
+
+    # fallback
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value: object) -> PlaybackState:
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
