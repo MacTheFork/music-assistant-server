@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from hashlib import shake_128
 from typing import TYPE_CHECKING
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
+from music_assistant_models.config_entries import ProviderConfig
+from music_assistant_models.enums import EventType, ProviderFeature
+from music_assistant_models.event import MassEvent
 from music_assistant_models.player import DeviceInfo
+from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PLAYERS
 from music_assistant.helpers.json import SerializableType
@@ -22,6 +27,8 @@ if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import ConfigEntry
 
+    from music_assistant.mass import MusicAssistant
+
 
 class OpenHomePlayerProvider(PlayerProvider):
     """Linn/OpenHome Media Player provider."""
@@ -31,6 +38,18 @@ class OpenHomePlayerProvider(PlayerProvider):
     upnp_factory: UpnpFactory
     notify_server: OpenHomeNotifyServer
     requester: AiohttpSessionRequester
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ):
+        super().__init__(mass, manifest, config, supported_features)
+        self.udn_player_id_map: dict[
+            str, str
+        ] = {}  # holds lookup table for udn to local player id
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -48,6 +67,13 @@ class OpenHomePlayerProvider(PlayerProvider):
             requester=self.requester, mass=self.mass
         )
 
+        self._unsubscribe = self.mass.subscribe(
+            self._handle_event, EventType.QUEUE_TIME_UPDATED
+        )
+
+    async def _handle_event(self, event: MassEvent) -> None:
+        self.logger.debug("handle_event: %s", event)
+
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         self.mass.streams.unregister_dynamic_route(
@@ -55,7 +81,7 @@ class OpenHomePlayerProvider(PlayerProvider):
         )
         self._ignored_udns = set()
 
-    async def get_diagnostics(self) -> dict[str, SerializableType]:
+    async def get_diagnostics(self) -> Sequence[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
         now = time.time()
         devices: list[SerializableType] = [
@@ -107,22 +133,32 @@ class OpenHomePlayerProvider(PlayerProvider):
 
         await self._device_discovered(ssdp_udn, description_url)
 
-    def hash_player_id(self, udn: str) -> str:
+    def get_player_id(self, udn: str) -> str:
         """
         Generate a player id, deterministically derived from udn, for a new openhome media player.
 
         While hash collisions are possible, they are very unlikely.
         """
+        # lookup player_id by udn so hash need only be calculated once
+        # self.logger.warning("get_player_id: %s", udn)
+
+        if udn in self.udn_player_id_map:
+            # self.logger.warning("Existing player_id: %s %s", udn, self.udn_player_id_map[udn])
+            return self.udn_player_id_map[udn]
+
         hash_id = shake_128(
             udn.removeprefix("uuid:").encode("utf-8"), usedforsecurity=False
         ).hexdigest(6)
         player_id = f"ohm{hash_id}"
-        self.logger.debug("Hashed udn %s to player id %s", udn, player_id)
-
-        return player_id if player_id is not None else udn
+        self.udn_player_id_map[udn] = player_id
+        # self.logger.warning("New player_id: %s %s", udn, self.udn_player_id_map[udn])
+        return player_id
 
     async def _device_discovered(self, udn: str, description_url: str) -> None:
         """Handle discovered Linn/OpenHome Media player."""
+        # self.logger.debug("_device_discovered: %s", udn)
+        # self.logger.warning("_device_discovered: udn_player_id_map %s", self.udn_player_id_map)
+
         async with self.lock:
             # skip devices that we've already determined should be ignored
             if udn in self._ignored_udns:
@@ -131,7 +167,8 @@ class OpenHomePlayerProvider(PlayerProvider):
 
             # given the possible variations in udn format for open home devices
             # generate a fixed length hash as player_id for cosmetic consistency
-            player_id: str = self.hash_player_id(udn)
+            player_id: str = self.get_player_id(udn)
+            # self.logger.warning("player_id discovered: %s %s", udn, player_id)
 
             if openhome_player := self.mass.players.get_player(
                 player_id
