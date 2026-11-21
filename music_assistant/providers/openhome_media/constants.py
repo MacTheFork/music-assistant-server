@@ -45,20 +45,3 @@ PLAYER_CONFIG_ENTRIES: list[ConfigEntry | str] = [
     ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": False}),
     CONF_SELECT_DEVICE_SOURCE,
 ]
-
-
-class PlaybackState(StrEnum):
-    """Enum for the (playback)state of a player."""
-
-    BUFFERING = "buffering"
-    IDLE = "idle"
-    PAUSED = "paused"
-    PLAYING = "playing"
-
-    # fallback
-    UNKNOWN = "unknown"
-
-    @classmethod
-    def _missing_(cls, value: object) -> PlaybackState:
-        """Set default enum member if an unknown value is provided."""
-        return cls.UNKNOWN

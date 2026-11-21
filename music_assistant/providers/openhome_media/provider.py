@@ -68,11 +68,11 @@ class OpenHomePlayerProvider(PlayerProvider):
         )
 
         self._unsubscribe = self.mass.subscribe(
-            self._handle_event, EventType.QUEUE_TIME_UPDATED
+            self._handle_mass_event, EventType.QUEUE_TIME_UPDATED
         )
 
-    async def _handle_event(self, event: MassEvent) -> None:
-        self.logger.debug("handle_event: %s", event)
+    async def _handle_mass_event(self, event: MassEvent) -> None:
+        self.logger.debug("handle_mass_event: %s", event)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""

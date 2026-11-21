@@ -39,7 +39,7 @@ from async_upnp_client.profiles.ohmedia import (
 from didl_lite import didl_lite
 from music_assistant_models.enums import (
     IdentifierType,
-    # PlaybackState,
+    PlaybackState,
     PlayerFeature,
     PlayerType,
 )
@@ -55,7 +55,6 @@ from music_assistant.providers.openhome_media.constants import (
     PLAYER_CONFIG_ENTRIES,
     PLAYLIST,
     RADIO,
-    PlaybackState,  # override to allow more states e.g. Buffering
     radio_option,
 )
 from music_assistant.providers.openhome_media.helpers import (
@@ -259,19 +258,16 @@ class OpenHomePlayer(Player):
         _playback_state = self._transport_state_to_playback_state(
             self.profile.transport_state
         )
-        # self.logger.warning("SET_DYNAMIC_ATTRIBUTES 1b %s", _playback_state)
 
-        assert _playback_state is not None  # for type checking
-        prev_playback_state = self._observed_playback_state
-        self._observed_playback_state = _playback_state
-        # self.logger.warning("SET_DYNAMIC_ATTRIBUTES 1c %s", prev_playback_state)
+        if _playback_state is not None:
+            prev_playback_state = self._observed_playback_state
+            self._observed_playback_state = _playback_state
 
-        if _playback_state != PlaybackState.PLAYING:
-            self._playing_since = None
-        elif prev_playback_state not in (None, PlaybackState.PLAYING):
-            self._playing_since = time.time()
-        # self.logger.debug("SET_DYNAMIC_ATTRIBUTES 1d %s", self._playing_since)
-        self._attr_playback_state = _playback_state
+            if _playback_state != PlaybackState.PLAYING:
+                self._playing_since = None
+            elif prev_playback_state not in (None, PlaybackState.PLAYING):
+                self._playing_since = time.time()
+            self._attr_playback_state = _playback_state
 
         # current media
         media_title = media_artist = media_album = media_image_url = media_duration = (
@@ -409,8 +405,11 @@ class OpenHomePlayer(Player):
     async def stop(self) -> None:
         """Stop command."""
         self.logger.debug("Command STOP for player %s", self.display_name)
-        if self.selected_play_source == RADIO:
+        if self.active_source_type == RADIO:
             self.cancel_next_media_timer()
+        if self.active_source_type == PLAYLIST:
+            # TODO tidy up tracks if playlist
+            pass
         try:
             await self.profile.async_stop()
         except UpnpError:
@@ -418,13 +417,15 @@ class OpenHomePlayer(Player):
                 "Could not execute STOP command on player %s", self.display_name
             )
 
+
     @catch_request_errors
     async def pause(self) -> None:
         """Pause command."""
         self.logger.debug("Command PAUSE for player %s", self.display_name)
         # TODO Pause/Play doesn't work
-        #  with Playlists elapsed time increases and Play adds new tracks
+        #  Play adds new tracks
         #  old tracks not removed
+        # Service has Pause is different from CanPause
 
         # Get CAN_PAUSE capability, polling if necessary
         can_pause = self.profile.get_state_variable_value(
@@ -437,10 +438,6 @@ class OpenHomePlayer(Player):
             can_pause = self.profile.get_state_variable_value(
                 Service.TRANSPORT, TransportState.CAN_PAUSE
             )
-
-        if self.selected_play_source == RADIO:
-            self.cancel_next_media_timer()
-
         # If device supports pause, use pause; otherwise fall back to stop
         if can_pause:
             try:
@@ -451,21 +448,31 @@ class OpenHomePlayer(Player):
                 )
         else:
             try:
-                await self.profile.async_stop()
+                await self.stop()
             except UpnpError:
                 self.logger.warning(
                     "Could not execute STOP command on player %s", self.display_name
                 )
 
+        if self.active_source_type == RADIO:
+            self.cancel_next_media_timer()
+        if self.active_source_type == PLAYLIST:
+            # TODO Handle timers etc. for Playlist
+            pass
+
     @catch_request_errors
     async def next_track(self) -> None:
         """Next command."""
-        await self.profile.async_playlist_next()
+        if self.active_source_type == PLAYLIST:
+            # TODO tidy up tracks if playlist
+            await self.profile.async_playlist_next()
 
     @catch_request_errors
     async def previous_track(self) -> None:
         """Previous command."""
-        await self.profile.async_playlist_previous()
+        if self.active_source_type == PLAYLIST:
+            # TODO tidy up tracks if playlist
+            await self.profile.async_playlist_previous()
 
     @catch_request_errors
     async def seek(self, position: int) -> None:
@@ -477,17 +484,16 @@ class OpenHomePlayer(Player):
                     stream_id, position
                 )
                 return
-        active_source_type = await self.profile.async_active_source_type()
-        if active_source_type == ProductSourceType.RADIO:
+        if self.active_source_type == ProductSourceType.RADIO:
             await self.profile.async_radio_seek_second_absolute(position)
-        else:
+        if self.active_source_type == ProductSourceType.PLAYLIST:
             await self.profile.async_playlist_seek_second_absolute(position)
 
     @catch_request_errors
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
         self.logger.debug("Command PLAY_MEDIA for player %s", self.display_name)
-
+        self.controlled_by_mass = True
         # always stop any scheduled enqueue_next_media task
         await self.stop()
 
@@ -499,9 +505,15 @@ class OpenHomePlayer(Player):
         # that is slow or failing to report state changes.
         prev_state = self._attr_playback_state
 
+        self.selected_play_source = str(
+            await self.mass.config.get_player_config_value(
+                player_id=self.player_id, key=CONF_SELECT_DEVICE_SOURCE_KEY
+            )
+        )
+
         try:
             if self.selected_play_source == RADIO:
-                # workaround to avoid buffering problem with Linn DSM - flip source away from Radio
+                # workaround to avoid hung buffering problem with Linn DSM - flip source away from Radio
                 if self.profile.product_source_xml is not None:
                     radio_index = get_source_index_of_type(
                         self.profile.product_source_xml, RADIO
@@ -514,9 +526,10 @@ class OpenHomePlayer(Player):
                     0.5
                 )  # allow reaction time for device to flip back to Radio
                 await self.profile.async_radio_play()
-            else:  # use Playlist
+            elif self.selected_play_source == PLAYLIST:  # use Playlist
                 # assume control of Playlist
-                self.controlled_by_mass = True
+                # TODO tidy up tracks if playlist
+                #  and playing from pause
                 last_id = await self.profile.async_playlist_last_id()
                 new_id = (
                     await self.profile.async_playlist_insert(
@@ -562,11 +575,6 @@ class OpenHomePlayer(Player):
         active_queue_id = active_queue.queue_id
         queue = self.mass.player_queues.get(active_queue_id)
 
-        # TODO remove - don't look up every time - rarely changes
-        # selected_play_source = await self.mass.config.get_player_config_value(
-        #     self.player_id, CONF_SELECT_DEVICE_SOURCE_KEY
-        # )
-
         remaining_time: float = 0.0
         if queue.current_item.duration is not None:
             remaining_time = (
@@ -574,7 +582,8 @@ class OpenHomePlayer(Player):
             )
             remaining_time = max(0, remaining_time)
 
-        if self.selected_play_source == RADIO:
+        self.logger.debug("ENM: active_source_type %s", self.active_source_type)
+        if self.active_source_type == RADIO:
             # schedule a play_media for when track has ended
             if active_queue.state == PlaybackState.PLAYING:
                 self.mass.call_later(
@@ -583,8 +592,10 @@ class OpenHomePlayer(Player):
                     media,
                     task_id=f"ohm_enqueue_{active_queue_id}",
                 )
-        else:
+        elif self.active_source_type == PLAYLIST:
             # append track to Playlist
+            self.logger.debug("ENM: append track to Playlist %s", self.active_source_type)
+
             current_id = (await self.profile.async_playlist_id())["Value"]
             self.trailing_id = current_id
             current_uri = (await self.profile.async_playlist_read(current_id)).get(
@@ -594,12 +605,14 @@ class OpenHomePlayer(Player):
             #     # only enqueue if there's something to play, and we are playing
             #     # and there are no more tracks
             #     # and if next track is not a repeat of current track
+            self.logger.debug("ENM: %s %s %s %s", next_track_url,current_uri,self.profile.transport_state,current_id, )
             if (
                 next_track_url is not None
-                and self.profile.transport_state == TransportStateAllowedValues.PLAYING
+                # and self.profile.transport_state == TransportStateAllowedValues.PLAYING
                 and current_id == last_id
                 and current_uri != next_track_url
             ):  # at end of track playlist
+                self.logger.debug("ENM: async_playlist_insert")
                 await self.profile.async_playlist_insert(
                     last_id, next_track_url, didl_metadata
                 )
@@ -737,8 +750,12 @@ class OpenHomePlayer(Player):
     @staticmethod
     def _transport_state_to_playback_state(
         transport_state: str | None,
-    ) -> PlaybackState:
-        """Return MA playback state from Linn/OpenHome Media device transport state."""
+    ) -> PlaybackState | None:
+        """
+        Return MA playback state from Linn/OpenHome Media device transport state.
+
+        None is used to as a no-op instruction i.e. ignore the state reported
+        """
         match transport_state:
             case TransportStateAllowedValues.PLAYING:
                 return PlaybackState.PLAYING
@@ -747,10 +764,11 @@ class OpenHomePlayer(Player):
             case TransportStateAllowedValues.STOPPED:
                 return PlaybackState.IDLE
             case TransportStateAllowedValues.BUFFERING:
-                return PlaybackState.UNKNOWN  # if expanded constant use BUFFERING otherwise consider as still playing
+                return None  #
             case TransportStateAllowedValues.WAITING:
-                return PlaybackState.UNKNOWN  # consider as still playing
+                return None  #
             case _:
+                # not given an allowed value
                 return PlaybackState.UNKNOWN
 
     # endregion
@@ -924,10 +942,10 @@ class OpenHomePlayer(Player):
         base_url = self.mass.streams.base_url
         uri = self.profile.get_state_variable_value(Service.INFO, InfoState.URI)
         if uri is not None:
-            is_mass_control = uri.startswith(base_url)
-            self.logger.warning("ADVANCE: MASS CONTROL IS: %s", is_mass_control)
+            self.controlled_by_mass = uri.startswith(base_url)
+            self.logger.warning("ADVANCE: MASS CONTROL IS: %s", self.controlled_by_mass)
 
-        if not is_mass_control:
+        if not self.controlled_by_mass:
             self.logger.warning("ADVANCE: NOT MASS CONTROL, RETURNING")
             return
 
@@ -937,7 +955,7 @@ class OpenHomePlayer(Player):
             if queue.current_index is not None
             else None
         )
-        self.logger.warning("ADVANCE: LAST TRACK %s", is_last_track)
+        self.logger.warning("ADVANCE: IS LAST TRACK %s %s", is_last_track, self._attr_playback_state)
         is_idle = self._attr_playback_state == PlaybackState.IDLE
 
         if (
@@ -965,20 +983,18 @@ class OpenHomePlayer(Player):
             )
             return
 
+        self.logger.warning("ADVANCE: PRE END OF QUEUE %s %s", is_last_track, self._device_has_next_media)
         if is_last_track and not self._device_has_next_media:
-            self.logger.warning("ADVANCE: END OF QUEUE")
+            self.logger.warning("ADVANCE: *END OF QUEUE* %s %s", self._attr_playback_state, self._attr_elapsed_time)
             # TODO: why does it sometimes wait for the 5 seconds before stopping
             last_id = await self.profile.async_playlist_last_id()
-            self._attr_playback_state = PlaybackState.IDLE
-            self._attr_supported_features.remove(
-                PlayerFeature.POWER
-            )  # suspend feature while stop called
-            await self.mass.player_queues.stop(queue_id)
-            self._attr_supported_features.add(PlayerFeature.POWER)
-            await self.stop()
             self._attr_current_media = None
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
+
+            self._attr_playback_state = PlaybackState.IDLE
+            await self.mass.player_queues.stop(queue_id)
+            # await self.stop()
             self.mass.player_queues.signal_update(queue_id)
             if queue_player := self.mass.players.get_player(queue_id, True):
                 queue_player.update_state()
@@ -1077,9 +1093,9 @@ class OpenHomePlayer(Player):
                             sv.value,
                             self.controlled_by_mass,
                         )
-                        self._attr_playback_state = (
-                            self._transport_state_to_playback_state(sv.value)
-                        )
+                        _playback_state = self._transport_state_to_playback_state(sv.value)
+                        if _playback_state is not None:
+                            self._attr_playback_state = _playback_state
                         prev_playback_state = self._observed_playback_state
                         self._observed_playback_state = self._attr_playback_state
                         if self._attr_playback_state != PlaybackState.PLAYING:
@@ -1108,33 +1124,34 @@ class OpenHomePlayer(Player):
         :param state_variables: the state variables whose values have changed
         """
         for sv in state_variables:
-            match sv.name:
-                case ProductState.STANDBY:
-                    self._attr_powered = not sv.value
-                case ProductState.SOURCE_INDEX:
-                    # TODO handle change of external active source
-                    pass
-                case ProductState.SOURCE_XML:
-                    # this should be fairly static
-                    try:
-                        if sv.value:
-                            self.product_source_xml = DefusedET.fromstring(
-                                str(sv.value)
+            if sv.value is not None:
+                match sv.name:
+                    case ProductState.STANDBY:
+                        self._attr_powered = not sv.value
+                    case ProductState.SOURCE_INDEX:
+                        source = await self.profile.async_product_source(sv.value)
+                        self.active_source_type = source.get("Type")
+                    case ProductState.SOURCE_XML:
+                        # this should be fairly static
+                        try:
+                            if sv.value:
+                                self.product_source_xml = DefusedET.fromstring(
+                                    str(sv.value)
+                                )
+                        except (
+                            ParseError,
+                            AttributeError,
+                            IndexError,
+                            KeyError,
+                            TypeError,
+                        ):
+                            self.logger.debug("Unable to process Source XML %s", sv.value)
+                        else:
+                            self._attr_source_list = self._source_list_from_source_xml(
+                                self.product_source_xml
                             )
-                    except (
-                        ParseError,
-                        AttributeError,
-                        IndexError,
-                        KeyError,
-                        TypeError,
-                    ):
-                        self.logger.debug("Unable to process Source XML %s", sv.value)
-                    else:
-                        self._attr_source_list = self._source_list_from_source_xml(
-                            self.product_source_xml
-                        )
-                case _:
-                    pass
+                    case _:
+                        pass
 
     async def _handle_radio_event(
         self, state_variables: Sequence[UpnpStateVariable[Any]]
@@ -1148,9 +1165,9 @@ class OpenHomePlayer(Player):
             for sv in state_variables:
                 match sv.name:
                     case RadioState.TRANSPORT_STATE:
-                        self._attr_playback_state = (
-                            self._transport_state_to_playback_state(sv.value)
-                        )
+                        _playback_state = self._transport_state_to_playback_state(sv.value)
+                        if _playback_state is not None:
+                            self._attr_playback_state = _playback_state
                     case _:
                         pass
 
@@ -1219,9 +1236,9 @@ class OpenHomePlayer(Player):
                 case TransportState.STREAM_ID:  # indicates track has changed
                     pass
                 case TransportState.TRANSPORT_STATE:
-                    self._attr_playback_state = self._transport_state_to_playback_state(
-                        sv.value
-                    )
+                    _playback_state = self._transport_state_to_playback_state(sv.value)
+                    if _playback_state is not None:
+                        self._attr_playback_state = _playback_state
                 case TransportState.REPEAT:
                     self._attr_repeat_state = sv.value
                 case TransportState.SHUFFLE:
@@ -1380,8 +1397,8 @@ class OpenHomePlayer(Player):
             supported_features.add(PlayerFeature.PAUSE)
             supported_features.add(PlayerFeature.NEXT_PREVIOUS)
         if self.profile.has_product_standby:
-            # pass  # TODO need to incorporate this sensibly
-            supported_features.add(PlayerFeature.POWER)
+            pass  # TODO need to incorporate this sensibly
+            # supported_features.add(PlayerFeature.POWER)
         if self.profile.has_transport_seek_second_absolute:
             supported_features.add(PlayerFeature.SEEK)
         if self.profile.has_volume_mute:
