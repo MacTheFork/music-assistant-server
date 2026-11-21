@@ -265,6 +265,7 @@ class TestPlaybackCommands:
     ) -> None:
         """Test next track command."""
         player.set_available(True)
+        player.active_source_type = PLAYLIST
         await player.next_track()
         cast("AsyncMock", mock_ohm_device.async_playlist_next).assert_called_once()
 
@@ -274,7 +275,7 @@ class TestPlaybackCommands:
     ) -> None:
         """Test previous track command."""
         player.set_available(True)
-        player.set_available(True)
+        player.active_source_type = PLAYLIST
         await player.previous_track()
         cast("AsyncMock", mock_ohm_device.async_playlist_previous).assert_called_once()
 
@@ -298,7 +299,7 @@ class TestPlaybackCommands:
         """Test seek falls back to appropriate method when transport seek not available."""
         player.set_available(True)
         mock_ohm_device.has_transport_seek_second_absolute = False
-
+        player.active_source_type = PLAYLIST
         player._attr_active_source = ProductSourceType.PLAYLIST
         await player.seek(position=60)
         cast(
@@ -306,6 +307,7 @@ class TestPlaybackCommands:
         ).assert_called_once_with(60)
 
         player._attr_active_source = ProductSourceType.RADIO
+        player.active_source_type = RADIO
         with patch.object(
             mock_ohm_device,
             "async_active_source_type",
@@ -490,14 +492,15 @@ class TestFeatureDetection:
         assert PlayerFeature.PAUSE in player._attr_supported_features
         assert PlayerFeature.NEXT_PREVIOUS in player._attr_supported_features
 
-    def test_power_feature_when_standby_supported(
-        self, player: OpenHomePlayer, mock_ohm_device: OhmDevice
-    ) -> None:
-        """Test POWER feature when device supports standby."""
-        mock_ohm_device.has_product_standby = True
-        player._set_player_features()
-
-        assert PlayerFeature.POWER in player._attr_supported_features
+    # TODO MA powers down at unwanted times e.g. after clear queue
+    # def test_power_feature_when_standby_supported(
+    #     self, player: OpenHomePlayer, mock_ohm_device: OhmDevice
+    # ) -> None:
+    #     """Test POWER feature when device supports standby."""
+    #     mock_ohm_device.has_product_standby = True
+    #     player._set_player_features()
+    #
+    #     assert PlayerFeature.POWER in player._attr_supported_features
 
     def test_power_feature_absent_when_standby_unsupported(
         self, player: OpenHomePlayer, mock_ohm_device: OhmDevice
